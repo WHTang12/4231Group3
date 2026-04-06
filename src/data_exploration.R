@@ -18,3 +18,8 @@ table(df$female) # gender: 1 = female, 0 = male
 
 # Data included is already filtered for observations where mediator and Y are observed
 
+# check treatment rate by gender 
+df %>% group_by(female) %>% summarise(treat_rate = mean(treat), n = n())
+
+# check mediator rate by treatment and gender 
+df %>% group_by(female, treat) %>% summarise(employ_rate = mean(work2year2q), n = n())
