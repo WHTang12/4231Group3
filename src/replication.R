@@ -1,4 +1,5 @@
 library(tidyverse)
+library(boot)
 
 # import data
 df <- read_csv("../data/causalmech.csv")
@@ -144,8 +145,6 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 123) {
     est <- compute_effects(boot_df)
     return(unlist(est))
   }
-  
-  library(boot)
   set.seed(seed)
   
   boot_result <- boot(
@@ -170,8 +169,43 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 123) {
 female_results <- run_bootstrap(female_df, R = 1999, seed = 123)
 print(female_results$results)
 #saveRDS(female_results, file = "original_female_results.rds")
+female_results <- readRDS("original_female_results.rds")
 
 # Run for males
 male_results <- run_bootstrap(male_df, R = 1999, seed = 123)  
 print(male_results$results)
 #saveRDS(male_results, file = "original_male_results.rds")
+male_results <- readRDS("original_male_results.rds")
+
+
+### --- Propensity score plotting to check common support --- ###
+# Obtain propensity scores (mainly caring about P(D=1|M, W, X))
+female_ps <- propensity_models(female_df)
+male_ps <- propensity_models(male_df)
+
+plot_data <- bind_rows(
+  data.frame(
+    ps = female_ps$ps_mwx,
+    group = ifelse(female_df$d == 1, "Treated", "Control"),
+    gender = "Females"
+  ),
+  data.frame(
+    ps = male_ps$ps_mwx,
+    group = ifelse(male_df$d == 1, "Treated", "Control"),
+    gender = "Males"
+  )
+)
+
+# Plot
+ggplot(plot_data, aes(x = ps, fill = group)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ gender) +
+  labs(title = "Propensity Score Overlap - P(D=1|M,W,X)",
+       x = "Propensity Score", y = "Density", fill = "Group") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+)
+
