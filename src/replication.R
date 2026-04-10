@@ -209,3 +209,76 @@ ggplot(plot_data, aes(x = ps, fill = group)) +
     strip.text = element_text(face = "bold")
 )
 
+### --- Including Trimming --- ###
+trim_dataset <- function(df, trim) {
+  y <- df$y
+  d <- df$d
+  m <- df$m
+  x <- df$x
+  w <- df$w
+  
+  # Compute ps_mwx, the original replication only trims values of ps_mwx
+  ps_mwx <- glm(d ~ cbind(m, w, x), family = binomial("probit"))$fitted
+  
+  # keep only those not +-5% of extremes
+  keep <- (ps_mwx > trim) & (ps_mwx < (1 - trim))
+  cat("Dropped:", sum(!keep), "observations\n")
+  
+  # Return trimmed list
+  list(
+    y = y[keep],
+    d = d[keep],
+    m = m[keep],
+    x = x[keep, , drop = FALSE],
+    w = w[keep, , drop = FALSE]
+  )
+}
+
+# Apply trimming
+female_df_trim <- trim_dataset(female_df, 0.05)
+male_df_trim <- trim_dataset(male_df, 0.05)
+
+# then apply same function as earlier
+female_est_trim <- compute_effects(female_df_trim)
+male_est_trim <- compute_effects(male_df_trim)
+
+female_est_trim
+male_est_trim
+
+female_trim_results <- run_bootstrap(female_df_trim, R = 1999)
+male_trim_results <- run_bootstrap(male_df_trim, R = 1999)
+
+female_trim_results
+male_trim_results
+
+#saveRDS(female_trim_results, file = "trim_female_results.rds")
+#saveRDS(male_trim_results, file = "trim_male_results.rds")
+
+female_ps_trim <- propensity_models(female_df_trim)
+male_ps_trim <- propensity_models(male_df_trim)
+
+plot_data_trim <- bind_rows(
+  data.frame(
+    ps = female_ps_trim$ps_mwx,
+    group = ifelse(female_df_trim$d == 1, "Treated", "Control"),
+    gender = "Females"
+  ),
+  data.frame(
+    ps = male_ps_trim$ps_mwx,
+    group = ifelse(male_df_trim$d == 1, "Treated", "Control"),
+    gender = "Males"
+  )
+)
+
+# Plot
+ggplot(plot_data_trim, aes(x = ps, fill = group)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ gender) +
+  labs(title = "Propensity Score Overlap - P(D=1|M,W,X)",
+       x = "Propensity Score", y = "Density", fill = "Group") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+  )

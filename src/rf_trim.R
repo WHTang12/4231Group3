@@ -33,10 +33,10 @@ female_data <- extract_components(females)
 male_data <- extract_components(males)
 
 # Helper function to compute Absolute Standardized Mean Difference
-compute_max_asmd <- function(d, ps_x, covariates) {
+compute_max_asmd <- function(d, ps, covariates) {
   # which weights to use
   # Over here, i decide to use different weights to compute ASMD depending on which propensity score model is estimated
-  w <- ifelse(d == 1, 1/ps_x, 1/(1 - ps_x)) 
+  w <- ifelse(d == 1, 1/ps, 1/(1 - ps)) 
   
   # formula
   asmd_vec <- apply(covariates, 2, function(x) {
@@ -51,15 +51,32 @@ compute_max_asmd <- function(d, ps_x, covariates) {
   max(asmd_vec, na.rm = TRUE)
 }
 
+# Helper function to fit RF
+fit_rf <- function(d, features, params) {
+  data_rf <- data.frame(d = as.factor(d), features)
+  
+  model <- ranger(
+    d ~ .,
+    data = data_rf,
+    probability = TRUE,
+    mtry = params$mtry,
+    min.node.size = params$node_size,
+    sample.fraction = params$samp_frac,
+    num.trees = 500,
+    seed = 4231
+  )
+  
+  predict(model, data_rf)$predictions[, "1"]
+}
+
 # tuning the rf model
-# only tuning on mtry, because of reference paper that mentions mtry as being most significant determinant of covariate balance
-tune_ps <- function(df, type, label = "") {
+tune_ps <- function(df, type, trim = 0.05) {
   d <- df$d
   x <- df$x
   m <- df$m
   w <- df$w
   
-  # see which propensity score model is being tuned
+  # select features
   features <- switch(type,
                      ps_x = x,
                      ps_mx = cbind(m,x),
@@ -67,91 +84,105 @@ tune_ps <- function(df, type, label = "") {
                      ps_mwx = cbind(m,w,x)
   )
   
-  p <- ncol(features) # number of features
-  sqrt_p <- round(sqrt(p)) # sqrt(number of features)
+  p <- ncol(features)
+  sqrt_p <- round(sqrt(p))
   
-  # parameter grid: try out [sqrt(p)+/-1, p/3 and p/2]
+  # grids
   mtry_grid <- unique(pmax(1, c(sqrt_p - 1, sqrt_p, sqrt_p + 1,
                                 round(p / 3), round(p / 2))))
   mtry_grid <- sort(mtry_grid[mtry_grid <= p])
   
-  # Using in-sample, since we are ensuring covariate balance for our propensity model
-  # Not sure whether using in-sample is ideal, but again, according to reference paper, most papers use in-sample
-  train_df    <- as.data.frame(features)
+  node_size_grid <- c(5, 10, 20)
+  samp_frac_grid <- c(0.5, 0.7, 1)
+  
+  train_df <- as.data.frame(features)
   train_df$.d <- factor(d)
   
-  results <- purrr::map_dfr(mtry_grid, function(m) {
-    rf <- ranger(
-      formula       = .d ~ .,
-      data          = train_df,
-      mtry          = m,
-      num.trees     = 500,
-      probability   = TRUE,
-      min.node.size = 10,
-      seed          = 4231
-    )
-    
-    ps_hat <- pmax(pmin(rf$predictions[, "1"], 0.99), 0.01)
-    
-    asmd <- compute_max_asmd(d, ps_hat, features)
-    
-    tibble::tibble(mtry = m, max_asmd = asmd)
-  })
+  results <- expand.grid(
+    mtry = mtry_grid,
+    node_size = node_size_grid,
+    samp_frac = samp_frac_grid
+  ) %>%
+    pmap_dfr(function(mtry, node_size, samp_frac) {
+      
+      params <- list(mtry = mtry, node_size = node_size, samp_frac = samp_frac)
+      ps_hat <- fit_rf(d, train_df %>% select(-.d), params)
+      
+      # trim = 0.05
+      keep <- (ps_hat > trim) & (ps_hat < (1-trim))
+      d_trim <- d[keep]
+      features_trim <- features[keep, , drop = FALSE]
+      ps_trim <- ps_hat[keep]
+      
+      # compute ASMD
+      asmd <- compute_max_asmd(d_trim, ps_trim, features_trim)
+      
+      tibble(
+        mtry = mtry,
+        node_size = node_size,
+        samp_frac = samp_frac,
+        max_asmd = asmd,
+        n_kept = sum(keep)
+      )
+    })
   
   print(results)
   
-  best_mtry <- results$mtry[which.min(results$max_asmd)]
-  cat("best mtry:", best_mtry, "\n\n")
+  # pick parameters that minimizes the maximum asmd
+  best_row <- results[which.min(results$max_asmd), ]
+  cat("Best params:\n")
+  print(best_row)
+  cat("\n")
   
-  best_mtry
+  best_row
 }
 
-best_ps_x_female   <- tune_ps(female_data, "ps_x", "FEMALES")
-best_ps_mx_female  <- tune_ps(female_data, "ps_mx", "FEMALES")
-best_ps_wx_female  <- tune_ps(female_data, "ps_wx", "FEMALES")
-best_ps_mwx_female <- tune_ps(female_data, "ps_mwx", "FEMALES")
+best_ps_x_female <- tune_ps(female_data, "ps_x", trim = 0.05)
+best_ps_mx_female <- tune_ps(female_data, "ps_mx", trim = 0.05)
+best_ps_wx_female <- tune_ps(female_data, "ps_wx", trim = 0.05)
+best_ps_mwx_female <- tune_ps(female_data, "ps_mwx", trim = 0.05)
 
-best_ps_x_male  <- tune_ps(male_data, "ps_x", "MALES")
-best_ps_mx_male  <- tune_ps(male_data, "ps_mx", "MALES")
-best_ps_wx_male  <- tune_ps(male_data, "ps_wx", "MALES")
-best_ps_mwx_male <- tune_ps(male_data, "ps_mwx", "MALES")
+params_list_female <- list(
+  ps_x = as.list(best_ps_x_female),
+  ps_mx = as.list(best_ps_mx_female),
+  ps_wx = as.list(best_ps_wx_female),
+  ps_mwx = as.list(best_ps_mwx_female)
+)
+
+best_ps_x_male <- tune_ps(male_data, "ps_x", trim = 0.05)
+best_ps_mx_male <- tune_ps(male_data, "ps_mx", trim = 0.05)
+best_ps_wx_male <- tune_ps(male_data, "ps_wx", trim = 0.05)
+best_ps_mwx_male <- tune_ps(male_data, "ps_mwx", trim = 0.05)
+
+params_list_male <- list(
+  ps_x = as.list(best_ps_x_male),
+  ps_mx = as.list(best_ps_mx_male),
+  ps_wx = as.list(best_ps_wx_male),
+  ps_mwx = as.list(best_ps_mwx_male)
+)
 
 ### Same as before, just replacing with RF for propensity score model ###
 # Helper function to run propensity score models (RF)
-propensity_models <- function(df, mtry_list = list(ps_x=4, ps_mx=4, ps_wx=7, ps_mwx=6)) {
+propensity_models <- function(df, params_list, trim = 0.05) {
   d <- df$d
   m <- df$m
   x <- df$x
   w <- df$w
   
-  # helper to fit RF
-  fit_rf <- function(features, mtry_val) {
-    data_rf <- data.frame(d = as.factor(d), features)
-    
-    model <- ranger(
-      d ~ .,
-      data = data_rf,
-      probability = TRUE,
-      mtry = mtry_val,
-      num.trees = 500,
-      seed = 4231
-    )
-    
-    preds <- predict(model, data_rf)$predictions[, "1"]
-    return(preds)
-  }
-  
   # PS models with custom mtry
-  ps_x   <- fit_rf(as.data.frame(x), mtry_list$ps_x)
-  ps_mx  <- fit_rf(data.frame(m = m, x), mtry_list$ps_mx)
-  ps_wx  <- fit_rf(data.frame(w, x), mtry_list$ps_wx)
-  ps_mwx <- fit_rf(data.frame(m = m, w, x), mtry_list$ps_mwx)
+  ps_x   <- fit_rf(d, as.data.frame(x), params_list$ps_x)
+  ps_mx  <- fit_rf(d, data.frame(m = m, x), params_list$ps_mx)
+  ps_wx  <- fit_rf(d, data.frame(w, x), params_list$ps_wx)
+  ps_mwx <- fit_rf(d, data.frame(m = m, w, x), params_list$ps_mwx)
   
-  list(ps_x = ps_x, ps_mx = ps_mx, ps_wx = ps_wx, ps_mwx = ps_mwx)
+  # following original trimming in the paper, we only trim on ps_mwx
+  keep <- (ps_mwx > trim) & (ps_mwx < (1 - trim))
+  
+  list(ps_x = ps_x[keep], ps_mx = ps_mx[keep], ps_wx = ps_wx[keep], ps_mwx = ps_mwx[keep], keep=keep)
 }
 
 # Helper function to replicate Table VI (computation of each effects)
-compute_effects <- function(df) {
+compute_effects <- function(df, params_list) {
   y <- df$y
   d <- df$d
   m <- df$m
@@ -159,17 +190,24 @@ compute_effects <- function(df) {
   w <- df$w
   
   # propensity scores
-  ps <- propensity_models(df)
+  ps <- propensity_models(df, params_list)
   ps_x <- ps$ps_x
   ps_mx <- ps$ps_mx
   ps_wx <- ps$ps_wx
   ps_mwx <- ps$ps_mwx
+  keep <- ps$keep
+  
+  # trim
+  y <- y[keep]
+  d <- d[keep]
+  m <- m[keep]
+  x <- x[keep, , drop = FALSE]
+  w <- w[keep, , drop = FALSE]
   
   # helper function to normalize weights (see Section 3 of paper/Lecture 3)
   normalize <- function(numerator, denominator) {
     sum(numerator)/sum(denominator)
   }
-  
   
   # ate (difference in means of outcome between treated and untreated)
   ate <- mean(y[d==1]) - mean(y[d==0])
@@ -224,25 +262,25 @@ compute_effects <- function(df) {
   )
 }
 
-female_rf_est <- compute_effects(female_data)
-male_rf_est <- compute_effects(male_data)
-female_rf_est
-male_rf_est
+female_rf_trim_est <- compute_effects(female_data, params_list = params_list_female)
+male_rf_trim_est <- compute_effects(male_data, params_list = params_list_male)
+female_rf_trim_est
+male_rf_trim_est
 
 ### --- Bootstrap for standard errors --- ###
 # Same procedure as in original, just using parallel computation to speed up
 # With 5 cores, it still takes an hour for each gender
-# Results are saved in rf_female_results.rds and rf_male_results.rds
+# Results are saved in rf_female_trim_results.rds and rf_male_trim_results.rds
 
 # Use parallelization
 library(parallel)
 cl <- makeCluster(5)
-clusterExport(cl, varlist = c("compute_effects", "propensity_models"))
+clusterExport(cl, varlist = c("compute_effects", "propensity_models", "fit_rf"))
 clusterEvalQ(cl, library(ranger))
 
-run_bootstrap <- function(gender_df, R = 1999, seed = 4231) {
+run_bootstrap <- function(gender_df, params_list, R = 1999, seed = 4231) {
   
-  compute_effects_boot <- function(data, indices, gender_data) {
+  compute_effects_boot <- function(data, indices, gender_data, params_list) {
     boot_df <- list(
       y = gender_data$y[indices],
       d = gender_data$d[indices],
@@ -250,7 +288,7 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 4231) {
       x = gender_data$x[indices, , drop = FALSE],
       w = gender_data$w[indices, , drop = FALSE]
     )
-    est <- compute_effects(boot_df)
+    est <- compute_effects(boot_df, params_list)
     return(unlist(est))
   }
   set.seed(seed)
@@ -260,6 +298,7 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 4231) {
     statistic = compute_effects_boot,
     R = R,
     gender_data = gender_df,
+    params_list = params_list,
     parallel = "snow",
     ncpus = 5,
     cl = cl
@@ -267,7 +306,7 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 4231) {
   
   # Results table
   results_table <- data.frame(
-    Effect = names(compute_effects(gender_df)),
+    Effect = names(compute_effects(gender_df, params_list)),
     Estimate = boot_result$t0,
     SE = apply(boot_result$t, 2, sd, na.rm = TRUE),
     p_value = 2 * pnorm(-abs(boot_result$t0 / apply(boot_result$t, 2, sd, na.rm = TRUE)))
@@ -277,45 +316,17 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 4231) {
 }
 
 # Run for females
-female_rf_results <- run_bootstrap(female_data, R = 1999, seed = 4231)
-#female_rf_results <- readRDS("rf_female_results.rds")
-print(female_rf_results$results)
-#saveRDS(female_rf_results, file = "rf_female_results.rds")
+female_rf_trim_results <- run_bootstrap(female_data, params_list_female, R = 1999, seed = 4231)
+#female_rf_trim_results <- readRDS("rf_female_trim_results.rds")
+print(female_rf_trim_results$results)
+saveRDS(female_rf_trim_results, file = "rf_female_trim_results.rds")
 
 # Run for males
-male_rf_results <- run_bootstrap(male_data, R = 1999, seed = 4231)
-#male_rf_results <- readRDS("rf_male_results.rds")
-print(male_rf_results$results)
-#saveRDS(male_rf_results, file = "rf_male_results.rds")
+male_rf_trim_results <- run_bootstrap(male_data, params_list_male, R = 1999, seed = 4231)
+#male_rf_results <- readRDS("male_rf_trim_results.rds")
+print(male_rf_trim_results$results)
+saveRDS(male_rf_trim_results, file = "male_rf_trim_results.rds")
 
 stopCluster(cl)
 
 ########################################################
-y <- female_data$y
-d <- female_data$d
-m <- female_data$m
-x <- female_data$x
-w <- female_data$w
-
-ps_rf <- ranger(
-  d ~ .,
-  data = data.frame(d=factor(d), x),
-  probability = TRUE,
-  mtry = 5,
-  num.trees = 500,
-  seed = 4231
-)$predictions[,2]
-
-ps_probit <- glm(d ~ x, family = binomial("probit"))$fitted
-
-bind_rows(
-  data.frame(ps = ps_probit, group = ifelse(d==1, "Treated", "Control"), model = "Probit"),
-  data.frame(ps = ps_rf,     group = ifelse(d==1, "Treated", "Control"), model = "RF")
-) %>%
-  ggplot(aes(x = ps, fill = group)) +
-  geom_density(alpha = 0.4) +
-  facet_wrap(~ model) +
-  labs(x = "Propensity Score", y = "Density", fill = NULL) +
-  theme_minimal()
-
-ps_rf
