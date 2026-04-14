@@ -35,10 +35,20 @@ male_data <- extract_components(males)
 dml_f <- medDML(y = female_data$y,
                 d = female_data$d, 
                 m = female_data$m,
-                x = cbind(female_data$x, female_data$w),
+                x = female_data$x,
                 trim = 0.05,
-                normalized = T) # normalized weights for ipw weights, same as original ipw model
+                normalized = T, # normalized weights for ipw weights, same as original ipw model
+                MLmethod = "ensemble") # ensemble of lasso, rf, xgboost, svm
 
 dml_f
 
+dml_m <- medDML(y = male_data$y,
+                d = male_data$d, 
+                m = male_data$m,
+                x = male_data$x,
+                trim = 0.05,
+                normalized = T, # normalized weights for ipw weights, same as original ipw model
+                MLmethod = "ensemble") # ensemble of lasso, rf, xgboost, svm
 
+dml_m
+  

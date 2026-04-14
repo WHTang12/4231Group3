@@ -168,14 +168,14 @@ run_bootstrap <- function(gender_df, R = 1999, seed = 123) {
 # Run for females
 female_results <- run_bootstrap(female_df, R = 1999, seed = 123)
 print(female_results$results)
-#saveRDS(female_results, file = "original_female_results.rds")
-female_results <- readRDS("original_female_results.rds")
+#saveRDS(female_results, file = "results/original_female_results.rds")
+female_results <- readRDS("results/original_female_results.rds")
 
 # Run for males
 male_results <- run_bootstrap(male_df, R = 1999, seed = 123)  
 print(male_results$results)
-#saveRDS(male_results, file = "original_male_results.rds")
-male_results <- readRDS("original_male_results.rds")
+#saveRDS(male_results, file = "results/original_male_results.rds")
+male_results <- readRDS("results/original_male_results.rds")
 
 
 ### --- Propensity score plotting to check common support --- ###
@@ -248,11 +248,15 @@ male_est_trim
 female_trim_results <- run_bootstrap(female_df_trim, R = 1999)
 male_trim_results <- run_bootstrap(male_df_trim, R = 1999)
 
+female_trim_results <- readRDS("results/trim_female_results.rds")
+male_trim_results <- readRDS("results/trim_male_results.rds")
+
 female_trim_results
 male_trim_results
 
-#saveRDS(female_trim_results, file = "trim_female_results.rds")
-#saveRDS(male_trim_results, file = "trim_male_results.rds")
+#saveRDS(female_trim_results, file = "results/trim_female_results.rds")
+#saveRDS(male_trim_results, file = "results/trim_male_results.rds")
+
 
 female_ps_trim <- propensity_models(female_df_trim)
 male_ps_trim <- propensity_models(male_df_trim)

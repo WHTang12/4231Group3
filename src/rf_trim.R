@@ -317,15 +317,15 @@ run_bootstrap <- function(gender_df, params_list, R = 1999, seed = 4231) {
 
 # Run for females
 female_rf_trim_results <- run_bootstrap(female_data, params_list_female, R = 1999, seed = 4231)
-#female_rf_trim_results <- readRDS("rf_female_trim_results.rds")
+female_rf_trim_results <- readRDS("results/rf_female_trim_results.rds")
 print(female_rf_trim_results$results)
-saveRDS(female_rf_trim_results, file = "rf_female_trim_results.rds")
+#saveRDS(female_rf_trim_results, file = "results/rf_female_trim_results.rds")
 
 # Run for males
 male_rf_trim_results <- run_bootstrap(male_data, params_list_male, R = 1999, seed = 4231)
-#male_rf_results <- readRDS("male_rf_trim_results.rds")
+male_rf_trim_results <- readRDS("results/male_rf_trim_results.rds")
 print(male_rf_trim_results$results)
-saveRDS(male_rf_trim_results, file = "male_rf_trim_results.rds")
+#saveRDS(male_rf_trim_results, file = "results/male_rf_trim_results.rds")
 
 stopCluster(cl)
 
