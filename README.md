@@ -9,3 +9,5 @@ This project replicates and extends a causal mediation analysis of the Job Corps
   - `rf_trim.R` – IPW replication using Random Forest-based propensity score models
   - `double_ml.R` – DML estimation using the `causalweight` package
   - `rf_probit_comparison.R` – covariate balance comparison between the RF and probit-based propensity score models
+
+All results and plots are stored in `src/results` for ease of access and reproducibility, given the computational intensity of the bootstrap procedure.
