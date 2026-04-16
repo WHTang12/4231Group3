@@ -1,6 +1,7 @@
 library(tidyverse)
 library(boot)
 library(ranger)
+library(ggplot2)
 
 # import data
 df <- read_csv("../data/causalmech.csv")
@@ -16,15 +17,15 @@ extract_components <- function(df) {
   m <- df$work2year2q # mediator M, 1 if employed in first half of second year after assignment, 0 otherwise
   
   # pre-treatment covariates X
-  x <- df %>% select(emplq4, emplq4full, pemplq4, pemplq4mis, vocq4, vocq4mis, 
-                     health1212, health123,  pe_prb12, pe_prb12mis,  narry1, 
-                     numkidhhf1zero, numkidhhf1onetwo, pubhse12, h_ins12a, h_ins12amis) %>% as.matrix()
-  
-  # post-treatment, pre-mediator covariates W
-  w <- df %>% select(schobef, trainyrbef, jobeverbef, jobyrbef, health012, 
+  x <- df %>% select(schobef, trainyrbef, jobeverbef, jobyrbef, health012, 
                      health0mis, pe_prb0, pe_prb0mis, everalc, alc12, everilldrugs, 
                      age_cat, edumis, eduhigh, rwhite, everarr, hhsize, hhsizemis, 
                      hhinc12, hhinc8, fdstamp, welf1, welf2, publicass) %>% as.matrix()
+  
+  # post-treatment, pre-mediator covariates W
+  w <- df %>% select(emplq4, emplq4full, pemplq4, pemplq4mis, vocq4, vocq4mis, 
+                     health1212, health123,  pe_prb12, pe_prb12mis,  narry1, 
+                     numkidhhf1zero, numkidhhf1onetwo, pubhse12, h_ins12a, h_ins12amis) %>% as.matrix()
   
   list(y=y, d=d, m=m, x=x, w=w)
 }
@@ -169,10 +170,10 @@ propensity_models <- function(df, params_list, trim = 0.05) {
   x <- df$x
   w <- df$w
   
-  # PS models with custom mtry
-  ps_x   <- fit_rf(d, as.data.frame(x), params_list$ps_x)
-  ps_mx  <- fit_rf(d, data.frame(m = m, x), params_list$ps_mx)
-  ps_wx  <- fit_rf(d, data.frame(w, x), params_list$ps_wx)
+  # PS models
+  ps_x <- fit_rf(d, as.data.frame(x), params_list$ps_x)
+  ps_mx <- fit_rf(d, data.frame(m = m, x), params_list$ps_mx)
+  ps_wx <- fit_rf(d, data.frame(w, x), params_list$ps_wx)
   ps_mwx <- fit_rf(d, data.frame(m = m, w, x), params_list$ps_mwx)
   
   # following original trimming in the paper, we only trim on ps_mwx
@@ -182,7 +183,7 @@ propensity_models <- function(df, params_list, trim = 0.05) {
 }
 
 # Helper function to replicate Table VI (computation of each effects)
-compute_effects <- function(df, params_list) {
+compute_effects <- function(df, params_list, trim = 0.05) {
   y <- df$y
   d <- df$d
   m <- df$m
@@ -191,10 +192,10 @@ compute_effects <- function(df, params_list) {
   
   # propensity scores
   ps <- propensity_models(df, params_list)
-  ps_x <- ps$ps_x
+  ps_mwx <- ps$ps_mwx  
+  ps_x <- ps$ps_x 
+  ps_wx <- ps$ps_wx 
   ps_mx <- ps$ps_mx
-  ps_wx <- ps$ps_wx
-  ps_mwx <- ps$ps_mwx
   keep <- ps$keep
   
   # trim
@@ -209,45 +210,51 @@ compute_effects <- function(df, params_list) {
     sum(numerator)/sum(denominator)
   }
   
-  # ate (difference in means of outcome between treated and untreated)
+  # --- Potential outcomes ---
+  # E[Y(1, M(1))]
+  y1m1 <- normalize(y * d/ps_x,  d/ps_x)
+  # E[Y(0, M(0))]
+  y0m0 <- normalize(y * (1-d) / (1-ps_x), (1-d)/(1-ps_x))
+  # E[Y(1, M(0))]
+  y1m0 <- normalize(y * d * (1-ps_mwx) / ((1-ps_x) * ps_mwx),
+                    d * (1-ps_mwx) / ((1-ps_x) * ps_mwx))
+  # E[Y(0, M(1))]
+  y0m1 <- normalize(y * (1-d) * ps_mwx / (ps_x * (1-ps_mwx)),
+                    (1-d) * ps_mwx / (ps_x * (1-ps_mwx)))
+  
+  # --- ATE ---
   ate <- mean(y[d==1]) - mean(y[d==0])
   
-  ### proposition 3: average direct effect (equation 13) ###
-  de_treat <- normalize(y * d/ps_x, d/ps_x) -
-    normalize(y*(1-d)*ps_mwx/(ps_x*(1-ps_mwx)),
-              (1-d)*ps_mwx/(ps_x*(1-ps_mwx)))
+  # --- Average direct effects (Proposition 3 Equation 13) ---
+  de_treat   <- y1m1 - y0m1
+  de_control <- y1m0 - y0m0
   
-  de_control <- normalize(y * d * (1-ps_mwx)/((1-ps_x)*ps_mwx),
-                          d * (1-ps_mwx)/((1-ps_x)*ps_mwx)) -
-    normalize(y*(1-d)/(1-ps_x), (1-d)/(1-ps_x))
+  # --- Average indirect effects (Proposition 2 / equation 7) # THIS REFERS TO PRETREATMENT, SAME AS HUBER'S TABLE ---
+  ie_treat   <- y1m1 - normalize(y * d * (1-ps_mx) / ps_mx,
+                                 d * (1-ps_mx) / ps_mx)
+  ie_control <- normalize(y * (1-d) * ps_mx / (ps_x * (1-ps_mx)),
+                          (1-d) * ps_mx / (ps_x * (1-ps_mx))) - y0m0
   
-  # proposition 2: average indirect effect (equation 7)
-  ie_treat <- normalize(y*d/ps_x, d/ps_x) - normalize(y*d*(1-ps_mx)/ps_mx, d*(1-ps_mx)/ps_mx)
-  ie_control <- normalize(y*(1-d)*ps_mx/(ps_x*(1-ps_mx)), (1-d)*ps_mx/(ps_x*(1-ps_mx))) - normalize(y*(1-d)/(1-ps_x), (1-d)/(1-ps_x))
+  # --- Average partial indirect effects (Proposition 4) ---
+  ie_partial_treat <- y1m1 -
+    normalize(y * d / ps_mwx * (1-ps_mwx)/(1-ps_wx) * ps_wx/ps_x,
+              d / ps_mwx * (1-ps_mwx)/(1-ps_wx) * ps_wx/ps_x)
   
-  # preposition 4: average partial indirect effects
-  ie_partial_treat <- normalize(y * d/ps_x, d/ps_x) - normalize(y * d / ps_mwx * (1-ps_mwx)/(1-ps_wx) * ps_wx/ps_x, 
-                                                                d / ps_mwx * (1-ps_mwx)/(1-ps_wx) * ps_wx/ps_x)
+  ie_partial_control <-
+    normalize(y * (1-d) / (1-ps_mwx) * ps_mwx/ps_wx * (1-ps_wx)/(1-ps_x),
+              (1-d) / (1-ps_mwx) * ps_mwx/ps_wx * (1-ps_wx)/(1-ps_x)) - y0m0
   
-  ie_partial_control <- normalize(y * (1-d) / (1-ps_mwx) * ps_mwx/ps_wx * (1-ps_wx)/(1-ps_x),
-                                  (1-d) / (1-ps_mwx) * ps_mwx/ps_wx * (1-ps_wx)/(1-ps_x)) - normalize(y * (1-d)/(1-ps_x), (1-d)/(1-ps_x))
+  # --- Average total indirect effects (Proposition 5) ---
+  # Fit linear outcome model on treated
+  lm_treat   <- lm(y[d==1] ~ cbind(m, w, x)[d==1, ])
+  pred_treat  <- cbind(1, mean(m*(1-d)/(1-ps_x)), w, x) %*% lm_treat$coef
+  ie_total_treat <- normalize((y - pred_treat) * d / ps_x, d / ps_x)
   
-  # preposition 5: average total indirect effect
-  # fit (linear) outcome model on treated observations
-  lm_treat <- lm(y[d==1] ~ cbind(m, w, x)[d==1,])
-  # predict
-  pred_treat <- cbind(1, mean(m*(1-d)/(1-ps_x)), w, x) %*% lm_treat$coef
-  # plug into formula
-  ie_total_treat <- normalize((y - pred_treat) * d/ps_x, d/ps_x)
-  
-  
-  # fit (linear) outcome model on untreated observations
-  lm_control <- lm(y[d==0] ~ cbind(m, w, x)[d==0,])
-  # predict
+  # Fit linear outcome model on controls
+  lm_control  <- lm(y[d==0] ~ cbind(m, w, x)[d==0, ])
   pred_control <- cbind(1, mean(m*d/ps_x), w, x) %*% lm_control$coef
-  # plug into formula
-  ie_total_control <- normalize((pred_control - y) * (1-d)/(1-ps_x), (1-d)/(1-ps_x))
-  
+  ie_total_control <- normalize((pred_control - y) * (1-d) / (1-ps_x),
+                                (1-d) / (1-ps_x))
   
   list(
     ate = ate,
@@ -257,13 +264,13 @@ compute_effects <- function(df, params_list) {
     ie_total_control = ie_total_control,
     ie_partial_treat = ie_partial_treat,
     ie_partial_control = ie_partial_control,
-    ie_treat = ie_treat,
+    ie_treat  = ie_treat,
     ie_control = ie_control
   )
 }
 
-female_rf_trim_est <- compute_effects(female_data, params_list = params_list_female)
-male_rf_trim_est <- compute_effects(male_data, params_list = params_list_male)
+female_rf_trim_est <- compute_effects(female_data, params_list = params_list_female, trim = 0.05)
+male_rf_trim_est <- compute_effects(male_data, params_list = params_list_male, trim = 0.05)
 female_rf_trim_est
 male_rf_trim_est
 
@@ -316,17 +323,51 @@ run_bootstrap <- function(gender_df, params_list, R = 1999, seed = 4231) {
 }
 
 # Run for females
-female_rf_trim_results <- run_bootstrap(female_data, params_list_female, R = 1999, seed = 4231)
+#female_rf_trim_results <- run_bootstrap(female_data, params_list_female, R = 1999, seed = 4231)
 female_rf_trim_results <- readRDS("results/rf_female_trim_results.rds")
 print(female_rf_trim_results$results)
 #saveRDS(female_rf_trim_results, file = "results/rf_female_trim_results.rds")
 
 # Run for males
-male_rf_trim_results <- run_bootstrap(male_data, params_list_male, R = 1999, seed = 4231)
-male_rf_trim_results <- readRDS("results/male_rf_trim_results.rds")
+#male_rf_trim_results <- run_bootstrap(male_data, params_list_male, R = 1999, seed = 4231)
+#male_rf_trim_results <- readRDS("results/rf_male_trim_results.rds")
 print(male_rf_trim_results$results)
-#saveRDS(male_rf_trim_results, file = "results/male_rf_trim_results.rds")
+#saveRDS(male_rf_trim_results, file = "results/rf_male_trim_results.rds")
 
 stopCluster(cl)
 
 ########################################################
+### --- Analyse propensity score overlap (common support) --- ###
+ps_f <- propensity_models(female_data, params_list_female, trim = 0.05)
+ps_m <- propensity_models(male_data, params_list_female, trim = 0.05)
+female_df_trim <- data.frame(
+  ps = ps_f$ps_mwx,
+  d  = female_data$d[ps_f$keep]
+)
+
+male_df_trim <- data.frame(
+  ps = ps_m$ps_mwx,
+  d  = male_data$d[ps_m$keep]
+)
+
+plot_data_trim <- bind_rows(
+  data.frame(ps = female_df_trim$ps,
+             group = ifelse(female_df_trim$d == 1, "Treated", "Control"),
+             gender = "Females"),
+  data.frame(ps = male_df_trim$ps,
+             group = ifelse(male_df_trim$d == 1, "Treated", "Control"),
+             gender = "Males")
+)
+
+# plot
+ggplot(plot_data_trim, aes(x = ps, fill = group)) +
+  geom_density(alpha = 0.5, trim = T) +
+  facet_wrap(~ gender) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  labs(title = "Propensity Score Overlap (Random Forest) - P(D=1|M,W,X)",
+       x = "Propensity Score", y = "Density", fill = "Group") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        strip.text = element_text(face = "bold"))
+#ggsave("results/rf_ps_overlap.png", width = 8, height = 5, dpi = 600)
